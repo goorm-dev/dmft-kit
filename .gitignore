@@ -1,0 +1,17 @@
+# 환경 / 도구
+.venv/
+.venv-*/
+__pycache__/
+*.pyc
+.env
+.codegraph/
+.omo/
+
+# 학습 결과물 (GB 단위)
+checkpoints/
+reports/
+
+# 데이터: 실제 로그·생성물은 올리지 않는다. 예시 파일만 추적
+data/*
+!data/build_data.py
+!data/sample_chat.csv

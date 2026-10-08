@@ -1,0 +1,36 @@
+[project]
+name = "dmft-kit"
+version = "0.1.0"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "laya @ git+https://github.com/NandhaKishorM/laya@3cf26cbcb18725dbc2d127bb8bb2c4c43243ae63",
+    "argilla>=2.0",
+    "requests",  # argilla 2.8.0 이 import 하지만 의존성에 선언하지 않음
+]
+
+# torch 빌드는 extra 로 고른다. scripts/setup.ps1 이 NVIDIA GPU 유무를 보고 자동 선택:
+#   uv sync --extra gpu   CUDA 12.6 torch
+#   uv sync --extra cpu   CPU 전용 torch (훨씬 작음)
+[project.optional-dependencies]
+gpu = ["torch>=2.2"]
+cpu = ["torch>=2.2"]
+
+[tool.uv]
+package = false
+conflicts = [[{ extra = "gpu" }, { extra = "cpu" }]]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu126", extra = "gpu" },
+    { index = "pytorch-cpu", extra = "cpu" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
