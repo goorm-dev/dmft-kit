@@ -5,6 +5,15 @@ $env:PYTHONUTF8 = "1"
 $env:UV_NO_SYNC = "1"
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
+# .env (KEY=VALUE) -> environment; values already set in the shell win
+if (Test-Path .env) {
+    foreach ($line in Get-Content .env -Encoding UTF8) {
+        if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$' -and -not [Environment]::GetEnvironmentVariable($Matches[1])) {
+            [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2].Trim('"', "'"))
+        }
+    }
+}
+
 if (-not (Test-Path .venv)) { Write-Host "No .venv: run .\scripts\setup.ps1 first"; exit 2 }
 
 # GPU by default; CPU when forced (-Cpu) or when torch cannot see a CUDA device
