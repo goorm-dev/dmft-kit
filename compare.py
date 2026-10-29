@@ -60,6 +60,61 @@ def text(state):
     return s if len(s) <= 60 else s[:57] + "..."
 
 
+def noul_cases(report, qid):
+    return [c for c in report["cases"] if c["qid"] == qid and (c.get("answer") or {}).get("type") == "noul"]
+
+
+def rates(cases, threshold):
+    """noul 질문의 '예' 쪽 재현율·정밀도·오탐률. 분모가 0 이면 None."""
+    tp = sum(c["expected"] is True and c["answer"]["noul"] >= threshold for c in cases)
+    fp = sum(c["expected"] is False and c["answer"]["noul"] >= threshold for c in cases)
+    pos = sum(c["expected"] is True for c in cases)
+    neg = sum(c["expected"] is False for c in cases)
+    return {"recall": tp / pos if pos else None, "precision": tp / (tp + fp) if tp + fp else None,
+            "fpr": fp / neg if neg else None}
+
+
+def fmt(x):
+    return "" if x is None else f"{x:.4f}"
+
+
+noul_qids = sorted({c["qid"] for c in base["cases"] if (c.get("answer") or {}).get("type") == "noul"})
+if noul_qids:
+    out("\n### 질문별 재현율·정밀도·오탐률 (기준값 0.5, '예' 기준)\n")
+    out("| question | metric | base | finetuned | delta |\n|---|---|---|---|---|")
+    for qid in noul_qids:
+        a, b = rates(noul_cases(base, qid), 0.5), rates(noul_cases(ft, qid), 0.5)
+        for m, name in (("recall", "재현율"), ("precision", "정밀도"), ("fpr", "오탐률")):
+            d = f"{b[m] - a[m]:+.4f}" if a[m] is not None and b[m] is not None else ""
+            out(f"| {qid} | {name} | {fmt(a[m])} | {fmt(b[m])} | {d} |")
+
+    out("\n### 기준값별 재현율·오탐률\n")
+    out("| question | 기준값 | base 재현율 | base 오탐률 | ft 재현율 | ft 오탐률 |\n|---|---|---|---|---|---|")
+    for qid in noul_qids:
+        for t in (0.5, 0.4, 0.3, 0.2):
+            a, b = rates(noul_cases(base, qid), t), rates(noul_cases(ft, qid), t)
+            out(f"| {qid} | {t} | {fmt(a['recall'])} | {fmt(a['fpr'])} | {fmt(b['recall'])} | {fmt(b['fpr'])} |")
+
+
+def kind_of(case):
+    tags = case.get("tags") or []
+    return tags[1] if len(tags) > 1 else "-"
+
+
+kinds = sorted({kind_of(c) for c in base["cases"]})
+if kinds != ["-"]:
+    # 질문을 합치면 한 질문의 좋은 결과가 다른 질문의 약점을 가리므로 질문별로도 나눈다
+    out("\n### kind별 오답률\n\n| kind | question | 판정 수 | base | finetuned | delta |\n|---|---|---|---|---|---|")
+    for k in kinds:
+        for qid in ["전체"] + sorted({c["qid"] for c in base["cases"]}):
+            a, b = ([c for c in r["cases"] if kind_of(c) == k and c["correct"] is not None and qid in ("전체", c["qid"])]
+                    for r in (base, ft))
+            if not a:
+                continue
+            ea, eb = (sum(c["correct"] is False for c in cs) / len(cs) if cs else None for cs in (a, b))
+            d = f"{eb - ea:+.4f}" if ea is not None and eb is not None else ""
+            out(f"| {k} | {qid} | {len(a)} | {fmt(ea)} | {fmt(eb)} | {d} |")
+
 fixed, broken = [], []
 for (state, qid), b, f in zip(keys, base["cases"], ft["cases"]):
     assert b["qid"] == f["qid"] == qid

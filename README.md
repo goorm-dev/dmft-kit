@@ -37,6 +37,7 @@ bash scripts/3_predict.sh "문장"
 - **test 는 Submit 한 것만** 들어간다. test 검수를 안 하면 `test 가 비었습니다` 경고가 나온다.
   검수 순서: `split = test` 전부 → `kind = negated`, `needs_with_no` 우선 → 나머지 train 표본.
 - 합성 train 은 검수를 다 안 해도 된다. 미검수분은 생성 요청의 라벨로 들어간다 (Discard 한 것은 제외).
+  판정 모델과 라벨이 갈린 train 은 `llm_review.py --apply --discard-train-disagree` 로 미리 Discard 해 둔다.
 - 검수를 더 했으면 `1_prepare_data` 를 다시 실행하면 된다. 매번 Submit 된 전체를 새로 내보낸다.
 
 Argilla·API 키 없이 흐름만 확인: `1_prepare_data.ps1 -Demo` → `2_finetune.ps1` → `compare.ps1` → `3_predict.ps1`.
@@ -108,11 +109,12 @@ export ARGILLA_DATASET=reviews                            # 다른 분류기일 
 |---|---|
 | `setup.ps1 -Torch cpu` | `setup.sh --torch cpu` |
 | `0_collect.ps1 -Csv logs.csv -Generate -Rounds 8` | `0_collect.sh --csv logs.csv --generate --rounds 8` |
+| `-TrainModel gemini-3-5-flash,claude-sonnet-4-5` | `--train-model gemini-3-5-flash,claude-sonnet-4-5` |
 | `-IngestArgs '--id-col','room_id'` | `0_collect.sh --csv logs.csv -- --id-col room_id` (`--` 뒤는 그대로 ingest 로) |
 | `-TrainModel` `-TestModel` `-TestRounds` `-TestN` `-LabelModel` `-SkipSyntheticTrain` | `--train-model` `--test-model` `--test-rounds` `--test-n` `--label-model` `--skip-synthetic-train` |
 | `1_prepare_data.ps1 -Demo -ReviewedOnly -Base english` | `1_prepare_data.sh --demo --reviewed-only --base english` |
 | `2_finetune.ps1 -Cpu -Epochs 6 -Base english -Out checkpoints/x` | `2_finetune.sh --cpu --epochs 6 --base english --out checkpoints/x` |
-| `compare.ps1 -Model checkpoints/x -Data data/test.jsonl` | `compare.sh --model checkpoints/x --data data/test.jsonl` |
+| `compare.ps1 -Model checkpoints/x -Data data/test.jsonl -Name test` | `compare.sh --model checkpoints/x --data data/test.jsonl --name test` |
 | `3_predict.ps1 "문장" -Checkpoint checkpoints/x` | `3_predict.sh "문장" --checkpoint checkpoints/x` |
 
 PowerShell 판과 다른 점:
@@ -133,7 +135,7 @@ PowerShell 판과 다른 점:
 # 실제 채팅 로그 (메시지 1행 CSV: conversation_id, timestamp, role, text)
 .\scripts\0_collect.ps1 -Csv data\sample_chat.csv
 
-# 운영 로그가 없으면 LLM 합성 데이터 (train ~1,900개 + 다른 모델로 test ~160개)
+# 운영 로그가 없으면 LLM 합성 데이터 (train ~1,260개 + 다른 모델로 test ~105개)
 .\scripts\0_collect.ps1 -Generate
 
 # 둘 다 + 파인튜닝 모델 예측을 실제 로그의 라벨 초안으로
@@ -144,13 +146,78 @@ PowerShell 판과 다른 점:
 |---|---|---|
 | `-Csv` | | 실제 로그. 열 이름이 다르면 `-IngestArgs '--id-col','room_id','--text-col','message','--user-role','customer'` (엑셀 한글 CSV 는 `'--encoding','cp949'`) |
 | `-Generate` | | LLM 합성 데이터 생성 |
-| `-TrainModel` / `-Rounds` | `claude-haiku-5-5` / 6 | train 생성 모델, 조합(32개)당 요청 횟수. 요청 1회 = 10문장 |
-| `-TestModel` / `-TestRounds` / `-TestN` | `gemini-3-5-flash` / 1 / 5 | test 는 **train 과 다른 모델**로 |
+| `-TrainModel` / `-Rounds` | `gemini-3-5-flash,claude-sonnet-4-5` / 6 | train 생성 모델(여러 개면 요청을 모델별로 고르게 나눔), 조합당 요청 횟수. 요청 1회 = 10문장 |
+| `-TestModel` / `-TestRounds` / `-TestN` | `gpt-4-1` / 1 / 5 | test 는 **train 과 다른 모델**로. 겹치면 실행하지 않는다 |
 | `-LabelModel` | 없음 | 실제 로그에 laya 예측을 라벨 초안으로 (`multilingual` 또는 체크포인트 경로) |
 | `-SkipSyntheticTrain` | | 합성 train 을 Argilla 에 올리지 않음 (검수 없이 학습에 사용) |
 
 여러 번 실행해도 안전하다: 이미 Argilla 에 있는 레코드는 다시 올리지 않고(사람 라벨 보호), LLM 응답은
 `data/synthetic_raw/` 에 캐시되어 새 요청만 보낸다. 실패한 요청은 다시 실행하면 그것만 재시도한다.
+
+`generate.py` 직접 실행 (`0_collect` 가 내부에서 부르는 명령):
+
+```powershell
+uv run --no-sync scripts/data/generate.py --split train --model gemini-3-5-flash claude-sonnet-4-5 --rounds 6
+uv run --no-sync scripts/data/generate.py --split test --model gpt-4-1 --rounds 1 --n 5
+uv run --no-sync scripts/data/generate.py --dry-run          # 요청 수(모델별)와 첫 프롬프트만 출력
+```
+
+| 옵션 | 기본값 | 설명 |
+|---|---|---|
+| `--model` | `gemini-3-5-flash claude-sonnet-4-5` | 여러 개면 요청을 모델별로 번갈아 나눈다. 다른 split 을 만든 모델이 들어 있으면 실행하지 않는다 |
+| `--rounds` / `--n` | 6 / 10 | 조합(답 x 유형)마다 요청 횟수 / 요청 1회당 메시지 수 |
+| `--raw-dir` / `--out` | `data/synthetic_raw` / `data/synthetic.jsonl` | 캐시 폴더 / 출력. 시험 생성은 다른 폴더로 (아래) |
+
+- 응답 메시지가 정확히 `--n` 개이고 `finish_reason` 이 정상일 때만 캐시에 저장한다. 아니면 재시도한다.
+- 400 류 오류와 `finish_reason=content_filter` 는 같은 프롬프트면 결과가 같아 재시도하지 않는다.
+- 실패한 요청은 `<raw-dir>/failures.jsonl` 에 한 줄씩 남는다: `ts`, `key`, `split`, `model`, `kind`,
+  `error`(HTTP 응답 본문 또는 `finish_reason` 과 응답 끝부분).
+- 실행마다 `<raw-dir>/<split>.keys.json` 에 이번 실행의 요청 목록이 저장된다. `synthetic.jsonl` 은 이 목록의 캐시만으로
+  만든다. 모델·`--n`·`--rounds` 를 바꿔 다시 돌리면 이전 실행의 캐시는 출력에서 빠진다 (파일은 남는다).
+- `PROMPT_VERSION` 을 올리면 이전 버전 캐시는 쓰지 않는다. 현재 7.
+
+생성 결과 품질 점검과 LLM 자동 검수:
+
+```powershell
+uv run --no-sync scripts/data/check.py          # split 별 라벨·멀티턴 비율, 길이·통제 어휘 편향, 거절 history 라벨
+                                                #  + data/check/injection_sample-<split>.md (injection '예' 무작위 표본)
+                                                #  + data/check/review_sample-<split>.md   (모델 x kind x 라벨 층화 표본)
+uv run --no-sync scripts/data/llm_review.py     # 판정 모델로 재판정 (멀티턴은 history 포함) -> data/llm_review/to_review.md
+uv run --no-sync scripts/data/llm_review.py --apply --discard-train-disagree   # Argilla 에 반영
+```
+
+`check.py` 옵션: 입력 파일(기본 `data/synthetic.jsonl`), `--sample`(injection 표본 수, 기본 50, 0 이면 표본 파일을 만들지 않음),
+`--per-group`(층화 표본의 그룹당 건수, 기본 3), `--out-dir`(기본 `data/check`), `--seed`.
+H1I1 평균 길이가 H0I0 의 1.5배를 넘거나, 거절문이 든 history 중 '예' 비율이 20~80% 를 벗어나면 경고한다.
+층화 표본에는 "멀티턴 + 20자 이하 current" 그룹도 따로 있어, 한 행이 두 그룹에 나올 수 있다.
+표본에서 라벨 오류를 세어 10% 를 넘으면 `generate.py` 프롬프트를 고쳐 `PROMPT_VERSION` 을 올리고 다시 생성한다.
+전체 생성 전에 `--rounds 1 --n 5 --raw-dir data/pilot/raw --out data/pilot/synthetic.jsonl` 로 작게 먼저 돌려 보고,
+`check.py data/pilot/synthetic.jsonl --out-dir data/pilot/check` 로 점검한다.
+
+`llm_review.py` 옵션:
+
+| 옵션 | 기본값 | 설명 |
+|---|---|---|
+| `--model` | `claude-opus-5-5` | 판정 모델. 생성 모델보다 강한 모델을 쓴다 |
+| `--pool` / `--out-dir` | `data/pool.jsonl data/synthetic.jsonl` / `data/llm_review` | 판정할 레코드 / 결과 폴더 |
+| `--batch` / `--workers` | 20 / 8 | 요청 1회당 건수 / 동시 요청 수 |
+| `--limit` | | 처음 N 건만 판정 (시험용) |
+| `--no-judge` | | 새로 판정하지 않고 캐시된 판정만 사용 |
+| `--reuse-other-models` | | 다른 판정 모델의 캐시도 재사용. 판정 기준이 같은 것만 |
+| `--apply` | | 일치분은 생성 라벨로 Submit, `decisions.jsonl` 의 결정을 반영 (Argilla 서버 필요) |
+| `--discard-train-disagree` | | `--apply` 때 결정이 없는 train 불일치를 Discard 해 학습에서 뺀다. 판정 모델이 거부한(보류) 건은 빼지 않는다 |
+
+- 판정 캐시(`verdicts-<model>.jsonl`)에는 판정 기준 해시(`policy`)가 들어간다. `QUESTIONS` 나 판정 지시문을 바꾸면
+  예전 판정은 무시되고 다시 판정한다. 형식이 틀린 캐시 줄도 다시 판정한다.
+- 판정 모델의 콘텐츠 필터에 걸린 배치는 반씩 나눠 다시 보낸다. 한 건만 남아도 걸리면 그 건은 '보류'로 `to_review.md` 에 들어간다.
+- 불일치는 `disagree.jsonl`, 그중 결정이 없는 건은 사람 검수 목록 `to_review.md` 로 나온다.
+- 사람이 정한 결정은 같은 폴더의 `decisions.jsonl` 에 한 줄씩 쓴다. 라벨은 `QUESTIONS` 의 모든 질문을 빠짐없이 쓴다:
+  ```json
+  {"id": "a05423e490001ba8", "labels": {"harmful": true, "injection": false}}
+  {"id": "57caeb8c372a95f4", "discard": true}
+  ```
+  Argilla 에 올리기 전에 검사해, pool 에 없는 id, 빠진 질문, 틀린 값(`"discard": "false"` 등), 중복 id 가 있으면
+  해당 줄을 알려 주고 멈춘다.
 
 ### 사람 검수 (Argilla 화면)
 
@@ -195,6 +262,14 @@ epoch 기본값/권장: GPU 전체 학습 **4** (laya 기본값, 데이터 수�
 기본 모델(`multilingual`) 평가 → 학습(`checkpoints/ko-tickets`) → 학습 모델 평가 순서.
 마지막 `laya-evals compare` 가 exit code 1 이면 어떤 지표가 기본 모델보다 나빠졌다는 뜻이다(오류 아님).
 
+**CPU 헤드 학습 소요 시간**: train 1,080건 기준 epoch 당 약 80분 (10 epoch 면 13시간 이상).
+`laya-train` 은 중간부터 이어서 학습하는 기능이 없어, 중단되면 처음부터 다시 돌려야 한다.
+오래 걸리므로 로그를 파일로 남겨 두는 것을 권한다. 진행률(stderr)도 함께 남는다:
+
+```powershell
+.\scripts\2_finetune.ps1 -Cpu *> reports\finetune.log
+```
+
 ### 3단계: 기본 모델과 비교
 
 ```powershell
@@ -202,8 +277,11 @@ epoch 기본값/권장: GPU 전체 학습 **4** (laya 기본값, 데이터 수�
 .\scripts\compare.ps1 -Base english -Model checkpoints/v2 -Data data/versions/20261008-120000/test.jsonl
 ```
 
-`reports/compare.md` 에 저장된다. 지표별 ✅ 개선 / ❌ 악화 판정과, 고쳐진 사례(base 오답 → ft 정답)·
-망가진 사례(base 정답 → ft 오답) 목록. 테스트셋이 작으면 한 건에 수 %p 가 움직이니 사례 목록을 같이 본다.
+`reports/compare.md` 에 저장된다. 지표별 ✅ 개선 / ❌ 악화 판정, 질문별 재현율·정밀도·오탐률,
+기준값별(0.5, 0.4, 0.3, 0.2) 재현율·오탐률, kind별 오답률, 고쳐진 사례(base 오답 → ft 정답)·
+망가진 사례(base 정답 → ft 오답) 목록.
+`-Name test` 를 주면 `reports/compare_test.md`, `base_test.json`, `finetuned_test.json` 으로 저장해
+다른 비교 결과를 덮어쓰지 않는다. 테스트셋이 작으면 한 건에 수 %p 가 움직이니 사례 목록을 같이 본다.
 버전끼리 비교할 때는 export 할 때마다 test 구성이 바뀌므로 `data/versions/` 의 test 하나를 고정해 `-Data` 로 넘긴다.
 
 ### 4단계: 직접 넣어보기
@@ -345,6 +423,8 @@ scripts/
     generate.py    LLM → data/synthetic.jsonl (캐시: data/synthetic_raw/)
     prelabel.py    pool → Argilla (초안 + 메타데이터)
     export.py      Argilla → data/train.jsonl, data/test.jsonl, data/versions/
+    check.py       합성 데이터 품질 점검 (편향 수치, injection 표본 → data/check/)
+    llm_review.py  판정 모델 자동 검수 → data/llm_review/ (불일치 목록 to_review.md)
     argilla_io.py  Argilla 공용 코드
 eval.py          체크포인트 평가 → reports/*.json
 compare.py       리포트 두 개 비교 → reports/compare.md
@@ -363,5 +443,9 @@ argilla/docker-compose.yaml                Argilla 서버
 | 학습 중 `calibration: not fitted ... fewer than 10` | 데이터가 적어 확신도 보정이 안 됨. 답은 정상, 확신도 값만 믿지 말 것 |
 | export 가 `test 가 비었습니다` | test 를 아직 Submit 하지 않음. Argilla 에서 `split = test` 검수 |
 | export 의 `not in pool` 이 0 보다 큼 | Argilla 에 있는 레코드의 원본이 pool 파일에 없음 (pool 파일을 지웠거나 덮어씀) |
+| 생성 중 `finish_reason=content_filter` 로 같은 요청이 계속 실패 | 생성 모델의 콘텐츠 필터. 같은 프롬프트면 다시 보내도 걸린다. 빠진 요청의 kind·라벨은 `failures.jsonl` 에서 확인하고, 한 조합에 몰렸으면 다른 모델로 그 조합을 보충한다 |
+| `decisions.jsonl 오류` 로 `llm_review.py` 가 멈춤 | 출력된 줄의 id·질문·값을 고친다. `discard` 는 `true` 만, 라벨은 모든 질문을 `true`/`false` 로 |
+| 생성 중 `failed ... HTTP 500` | `data/synthetic_raw/failures.jsonl` 의 본문·`finish_reason` 확인. 게이트웨이가 모델의 출력 토큰 한도 초과(`length`)를 500 으로 돌려주기도 한다. 계속 실패하는 모델은 빼고 다시 실행 |
+| `*>` 로 로그를 남기면 스크립트가 중단됨 | PowerShell 5.1 이 리다이렉트된 진행률(stderr)을 오류로 보고 `$ErrorActionPreference = "Stop"` 에서 중단하던 문제. 지금은 `_env.ps1` 이 `uv` 호출에만 `Continue` 를 적용해 그대로 리다이렉트하면 된다 |
 | 한글이 깨짐 | `$env:PYTHONUTF8 = "1"`. CSV 는 `-IngestArgs '--encoding','cp949'` |
 | 이전에 올린 레코드에 메타데이터 필터가 안 먹힘 | 메타데이터는 새로 올리는 레코드에만 붙는다. 검수 전이면 새 `--dataset` 이름으로 다시 올린다 |

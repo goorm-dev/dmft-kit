@@ -1,5 +1,8 @@
 # Shared setup, dot-sourced by every script:  . "$PSScriptRoot\_env.ps1"
 $ErrorActionPreference = "Stop"
+# PowerShell 5.1 turns a native command's stderr (tqdm progress) into an error when output is redirected
+# (*> log.txt), which "Stop" would turn into an abort. Relax it for uv only; callers check $LASTEXITCODE.
+function uv { $ErrorActionPreference = "Continue"; & uv.exe @args }
 $env:PYTHONUTF8 = "1"
 # `uv run` would re-sync to the default (no extra) and drop the gpu/cpu torch chosen by setup.ps1
 $env:UV_NO_SYNC = "1"
